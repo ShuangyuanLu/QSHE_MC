@@ -72,6 +72,45 @@ class ED_SQHE:
                 self.hamiltonian[n + self.N, n3 + self.N] += self.t2 * np.exp(1j * self.phi)
                 self.hamiltonian[n3 + self.N, n + self.N] += self.t2 * np.exp(-1j * self.phi)
 
+    def get_hamiltonian_obc(self):
+        self.hamiltonian = np.zeros((self.N * 2, self.N * 2), dtype=np.complex128)
+        for i in range(self.L):
+            for j in range(self.L):
+                n = i * self.L + j
+                self.hamiltonian[n, n] += self.m
+                self.hamiltonian[n + self.N, n + self.N] += -self.m
+
+                self.hamiltonian[n, n + self.N] += self.t1
+                self.hamiltonian[n + self.N, n] += self.t1
+
+                if i - 1 >= 0 and j + 1 < self.L:
+                    n1 = ((i - 1) % self.L) * self.L + (j + 1) % self.L
+                    self.hamiltonian[n, n1 + self.N] += self.t1
+                    self.hamiltonian[n1 + self.N, n] += self.t1
+                if i - 1 >= 0:
+                    n2 = ((i - 1) % self.L) * self.L + j
+                    self.hamiltonian[n, n2 + self.N] += self.t1
+                    self.hamiltonian[n2 + self.N, n] += self.t1
+
+                if j + 1 < self.L:
+                    n1 = i * self.L + (j + 1) % self.L
+                    self.hamiltonian[n, n1] += self.t2 * np.exp(1j * self.phi)
+                    self.hamiltonian[n1, n] += self.t2 * np.exp(-1j * self.phi)
+                    self.hamiltonian[n + self.N, n1 + self.N] += self.t2 * np.exp(-1j * self.phi)
+                    self.hamiltonian[n1 + self.N, n + self.N] += self.t2 * np.exp(1j * self.phi)
+                if i + 1 < self.L:
+                    n2 = ((i + 1) % self.L) * self.L + j
+                    self.hamiltonian[n, n2] += self.t2 * np.exp(-1j * self.phi)
+                    self.hamiltonian[n2, n] += self.t2 * np.exp(1j * self.phi)
+                    self.hamiltonian[n + self.N, n2 + self.N] += self.t2 * np.exp(1j * self.phi)
+                    self.hamiltonian[n2 + self.N, n + self.N] += self.t2 * np.exp(-1j * self.phi)
+                if i - 1 >= 0 and j + 1 < self.L:
+                    n3 = ((i - 1) % self.L) * self.L + (j + 1) % self.L
+                    self.hamiltonian[n, n3] += self.t2 * np.exp(-1j * self.phi)
+                    self.hamiltonian[n3, n] += self.t2 * np.exp(1j * self.phi)
+                    self.hamiltonian[n + self.N, n3 + self.N] += self.t2 * np.exp(1j * self.phi)
+                    self.hamiltonian[n3 + self.N, n + self.N] += self.t2 * np.exp(-1j * self.phi)
+
     def get_eigenstates(self):
         D, V = scipy.linalg.eigh(self.hamiltonian)
         self.V = V[:, :self.N]
@@ -152,21 +191,18 @@ class ED_SQHE:
         # for correlator
         site_0, site_1 = 0, 1
         # \psi \psi_dagger
-        state_1_corr = self.c[site_0] @ (self.cd[site_1] @ state_1)
-        state_2_corr = self.c[site_1] @ (self.cd[site_0] @ state_2)
-        bilayer_state_corr = np.kron(state_1_corr, state_2_corr)
+        # state_1_corr = self.c[site_0] @ (self.cd[site_1] @ state_1)
+        # state_2_corr = self.c[site_1] @ (self.cd[site_0] @ state_2)
+        # bilayer_state_corr = np.kron(state_1_corr, state_2_corr)
         # Sz
-        # bilayer_state_corr = np.kron(self.n[site_0] @ (self.n[site_1] @ state_1), state_2) + np.kron(state_1, self.n[site_0] @ (self.n[site_1] @ state_2)) \
-        #                      - np.kron(self.n[site_0] @ state_1, self.n[site_1] @ state_2) - np.kron(self.n[site_1] @ state_1, self.n[site_0] @ state_2)
+        bilayer_state_corr = np.kron(self.n[site_0] @ (self.n[site_1] @ state_1), state_2) + np.kron(state_1, self.n[site_0] @ (self.n[site_1] @ state_2)) \
+                             - np.kron(self.n[site_0] @ state_1, self.n[site_1] @ state_2) - np.kron(self.n[site_1] @ state_1, self.n[site_0] @ state_2)
 
         thr_corr = rtol * np.max(np.abs(bilayer_state_corr))
         idx_corr = np.abs(bilayer_state_corr) < thr_corr
         bilayer_state_corr[idx_corr] = 0
         bilayer_state_corr = csc_matrix(bilayer_state_corr[:, None])
         self.correlator = kron(bilayer_state_corr, bilayer_state_corr.conj(), format='csc')
-
-
-
 
         for site in range(self.N * 2):
 

@@ -7,6 +7,10 @@ from pathlib import Path
 import h5py
 import time
 
+# for 2-layer update scheme, use sweep_for_update_2_layers(self, mode) to replace sweep(self, mode)
+# this function occurs twice: in initialize() and run()
+# for 2-layer update scheme, self.state_empty_site_list will not be maintained during update
+
 class SQHE:
     def __init__(self, parameters):
         self.t1 = parameters['t1']
@@ -43,13 +47,14 @@ class SQHE:
         self.state_filled_check_box = np.zeros((self.N * self.n_sublat, self.n_layer), dtype=int)
         self.log_wave_function_value = np.ones(self.n_layer)
 
-    def initiate(self):
+    def initialize(self):
         self.get_state_list()
         self.state_filled_site_list = np.arange(self.N)[:, None] * np.ones(self.n_layer, dtype=int)[None, :]
         self.state_empty_site_list = np.arange(self.N, self.N * 2)[:, None] * np.ones(self.n_layer, dtype=int)[None, :]
         self.state_filled_check_box[0: self.N, :] = 1
 
-        self.randomize_initial_state()
+        #self.sweep(mode='r')
+        self.sweep_for_update_2_layers(mode='r')
 
         for layer in range(self.n_layer):
             self.get_wave_function_matrix(layer)
@@ -57,44 +62,14 @@ class SQHE:
         for layer in range(self.n_layer):
             self.get_wave_function_matrix_inverse(layer)
 
-    def update(self, i_site_0, layer):
-        site_0 = self.state_filled_site_list[i_site_0, layer]
-        i_site_1 = np.random.randint(self.N)
-        site_1 = self.state_empty_site_list[i_site_1, layer]
-
-        v_T = self.state_list[site_1, :, layer] - self.state_list[site_0, :, layer]
-        wave_function_ratio = 1 + v_T @ self.wave_function_matrix_inverse[:, i_site_0, layer]
-
-        # self.wave_function_matrix[i_site_0, :, layer] = self.state_list[site_1, :, layer]
-        # _, new_log_wave_function_value = self.get_log_wave_function(layer)
-        # wave_function_ratio = np.exp(new_log_wave_function_value - self.log_wave_function_value[layer])
-
-        weight_ratio = (self.weight(site_1, layer, 1) * self.weight(site_0, layer, 0))
-        weight_ratio = (weight_ratio * np.abs(wave_function_ratio)) ** 2
-        if weight_ratio < 1 and np.random.rand() > weight_ratio:
-            #self.wave_function_matrix[i_site_0, :, layer] = self.state_list[site_0, :, layer]
-            return 0
-
-        # self.log_wave_function_value[layer] = new_log_wave_function_value
-        self.state_filled_site_list[i_site_0, layer] = site_1
-        self.state_empty_site_list[i_site_1, layer] = site_0
-        self.state_filled_check_box[site_0, layer] = 0
-        self.state_filled_check_box[site_1, layer] = 1
-        self.wave_function_matrix[i_site_0, :, layer] = self.state_list[site_1, :, layer]
-
-        self.wave_function_matrix_inverse[:, :, layer] -= np.outer(self.wave_function_matrix_inverse[:, i_site_0, layer] / wave_function_ratio, v_T @ self.wave_function_matrix_inverse[:, :, layer])
-        return 1
-
-    def update_2_layer(self):
-        pass
-
     def run(self):
-        self.initiate()
+        self.initialize()
 
         self._open_writer()
         try:
             for i_mc in range(self.n_mc):
-                self.sweep()
+                #self.sweep()
+                self.sweep_for_update_2_layers()
                 if i_mc % self.n_recalculate_inverse == 0:
                     for layer in range(self.n_layer):
                         self.get_wave_function_matrix_inverse(layer)
@@ -107,10 +82,99 @@ class SQHE:
         finally:
             self._close_writer()
 
-    def sweep(self):
+    def update(self, i_site_0, layer, mode='u'):
+        # mode = 'u' for update, = 'r' for initial randomization
+        site_0 = self.state_filled_site_list[i_site_0, layer]
+        i_site_1 = np.random.randint(self.N)
+        site_1 = self.state_empty_site_list[i_site_1, layer]
+
+        weight_ratio = (self.weight(site_1, layer, 1) * self.weight(site_0, layer, 0)) ** 2
+        if mode == 'u':
+            v_T = self.state_list[site_1, :, layer] - self.state_list[site_0, :, layer]
+            wave_function_ratio = 1 + v_T @ self.wave_function_matrix_inverse[:, i_site_0, layer]
+            weight_ratio = weight_ratio * np.abs(wave_function_ratio) ** 2
+
+        if weight_ratio < 1 and np.random.rand() > weight_ratio:
+            return 0
+
+        self.state_filled_site_list[i_site_0, layer] = site_1
+        self.state_empty_site_list[i_site_1, layer] = site_0
+        self.state_filled_check_box[site_0, layer] = 0
+        self.state_filled_check_box[site_1, layer] = 1
+
+        if mode == 'u':
+            self.wave_function_matrix[i_site_0, :, layer] = self.state_list[site_1, :, layer]
+            self.wave_function_matrix_inverse[:, :, layer] -= np.outer(self.wave_function_matrix_inverse[:, i_site_0, layer] / wave_function_ratio, v_T @ self.wave_function_matrix_inverse[:, :, layer])
+        return 1
+
+    def update_2_layers(self, i_site, j_site, mode='u'):
+        if i_site == j_site:
+            return 0
+        check_box_i = self.state_filled_check_box[i_site, :]
+        check_box_j = self.state_filled_check_box[j_site, :]
+        jump_available_layers = check_box_i != check_box_j
+        check_box_i_particle_hole_flipped = check_box_i.copy()
+        check_box_i_particle_hole_flipped[2: 4] = 1 - check_box_i_particle_hole_flipped[2: 4]
+        empty_indices = np.where(jump_available_layers & (check_box_i_particle_hole_flipped == 0))[0]
+        filled_indices = np.where(jump_available_layers & (check_box_i_particle_hole_flipped == 1))[0]
+        if empty_indices.size == 0 or filled_indices.size == 0:
+            return 0
+
+        empty_layer = empty_indices[np.random.randint(empty_indices.size)]
+        filled_layer = filled_indices[np.random.randint(filled_indices.size)]
+
+        if empty_layer < 2:
+            empty_site_0, empty_site_1 = j_site, i_site     # jump from site_0 to site_1
+        else:
+            empty_site_0, empty_site_1 = i_site, j_site
+        if filled_layer < 2:
+            filled_site_0, filled_site_1 = i_site, j_site
+        else:
+            filled_site_0, filled_site_1 = j_site, i_site
+
+        empty_i_site_0 = np.where(self.state_filled_site_list[:, empty_layer] == empty_site_0)[0]
+        filled_i_site_0 = np.where(self.state_filled_site_list[:, filled_layer] == filled_site_0)[0]
+
+        if mode == 'u':
+            empty_v_T = self.state_list[empty_site_1, :, empty_layer] - self.state_list[empty_site_0, :, empty_layer]
+            empty_wave_function_ratio = 1 + empty_v_T @ self.wave_function_matrix_inverse[:, empty_i_site_0, empty_layer]
+            filled_v_T = self.state_list[filled_site_1, :, filled_layer] - self.state_list[filled_site_0, :, filled_layer]
+            filled_wave_function_ratio = 1 + filled_v_T @ self.wave_function_matrix_inverse[:, filled_i_site_0, filled_layer]
+
+            weight_ratio = (np.abs(empty_wave_function_ratio) * np.abs(filled_wave_function_ratio)) ** 2
+            if weight_ratio < 1 and np.random.rand() > weight_ratio:
+                return 0
+
+        self.state_filled_site_list[empty_i_site_0, empty_layer] = empty_site_1
+        self.state_filled_check_box[empty_site_0, empty_layer] = 0
+        self.state_filled_check_box[empty_site_1, empty_layer] = 1
+
+        self.state_filled_site_list[filled_i_site_0, filled_layer] = filled_site_1
+        self.state_filled_check_box[filled_site_0, filled_layer] = 0
+        self.state_filled_check_box[filled_site_1, filled_layer] = 1
+
+        if mode == 'u':
+            self.wave_function_matrix[empty_i_site_0, :, empty_layer] = self.state_list[empty_site_1, :, empty_layer]
+            self.wave_function_matrix[filled_i_site_0, :, filled_layer] = self.state_list[filled_site_1, :, filled_layer]
+
+            self.wave_function_matrix_inverse[:, :, empty_layer] -= np.outer(
+                self.wave_function_matrix_inverse[:, empty_i_site_0, empty_layer] / empty_wave_function_ratio,
+                empty_v_T @ self.wave_function_matrix_inverse[:, :, empty_layer])
+            self.wave_function_matrix_inverse[:, :, filled_layer] -= np.outer(
+                self.wave_function_matrix_inverse[:, filled_i_site_0, filled_layer] / filled_wave_function_ratio,
+                filled_v_T @ self.wave_function_matrix_inverse[:, :, filled_layer])
+
+        return 1
+
+    def sweep(self, mode='u'):
         for layer in range(self.n_layer):
             for i_site_0 in range(self.N):
-                self.update(i_site_0, layer)
+                self.update(i_site_0, layer, mode)
+
+    def sweep_for_update_2_layers(self, mode='u'):
+        for i_site in range(self.N * self.n_sublat):
+            j_site = np.random.randint(self.N * self.n_sublat)
+            self.update_2_layers(i_site, j_site, mode)
 
     def measure(self):
         # your array to append each time
@@ -186,10 +250,7 @@ class SQHE:
         self.wave_function_matrix[:, :, layer] = self.state_list[self.state_filled_site_list[:, layer], :, layer]
 
     def get_wave_function_matrix_inverse(self, layer):
-        #start = time.time()
         inv_matrix = np.linalg.inv(self.wave_function_matrix[:, :, layer])
-        #end = time.time()
-        # print("time_inv:", end-start)
         # error = np.sum(np.abs(self.wave_function_matrix_inverse[:, :, layer] - inv_matrix))
         # print("error:", error)
         self.wave_function_matrix_inverse[:, :, layer] = inv_matrix
@@ -198,19 +259,19 @@ class SQHE:
         log_wave_function = np.linalg.slogdet(self.wave_function_matrix[:, :, layer])
         return log_wave_function
 
-    def randomize_initial_state(self):
-        for layer in range(self.n_layer):
-            for i_site_0 in range(self.N):
-                site_0 = self.state_filled_site_list[i_site_0, layer]
-                i_site_1 = np.random.randint(self.N)
-                site_1 = self.state_empty_site_list[i_site_1, layer]
-
-                weight_ratio = (self.weight(site_1, layer, 1) * self.weight(site_0, layer, 0)) ** 2
-                if np.random.rand() < weight_ratio:
-                    self.state_filled_site_list[i_site_0, layer] = site_1
-                    self.state_empty_site_list[i_site_1, layer] = site_0
-                    self.state_filled_check_box[site_0, layer] = 0
-                    self.state_filled_check_box[site_1, layer] = 1
+    # def randomize_initial_state(self):
+    #     for layer in range(self.n_layer):
+    #         for i_site_0 in range(self.N):
+    #             site_0 = self.state_filled_site_list[i_site_0, layer]
+    #             i_site_1 = np.random.randint(self.N)
+    #             site_1 = self.state_empty_site_list[i_site_1, layer]
+    #
+    #             weight_ratio = (self.weight(site_1, layer, 1) * self.weight(site_0, layer, 0)) ** 2
+    #             if np.random.rand() < weight_ratio:
+    #                 self.state_filled_site_list[i_site_0, layer] = site_1
+    #                 self.state_empty_site_list[i_site_1, layer] = site_0
+    #                 self.state_filled_check_box[site_0, layer] = 0
+    #                 self.state_filled_check_box[site_1, layer] = 1
 
     def recover_data_from_check_box(self):
         self.get_state_list()

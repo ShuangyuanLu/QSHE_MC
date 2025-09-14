@@ -15,19 +15,13 @@ from pathlib import Path
 from threadpoolctl import threadpool_limits
 
 
-# def _run_one_chain(parameters, seed):
-#     # Each worker gets its own independent RNG
-#     np.random.seed(seed)  # if your SQHE uses np.random.* internally
-#     model = SQHE(parameters)  # fresh instance, no shared state
-#     model.run()               # fills model.measurement (list)
-#     return model.measurement  # return list of measurements for this chain
-
 def _run_one_chain(parameters, seed):
     with threadpool_limits(1):   # ← limit BLAS/OpenMP to 1 thread in this worker
         np.random.seed(seed)
         model = SQHE(parameters)
         model.run()
         return model.measurement
+
 
 def run_parallel(parameters, num_chains=8, master_seed=12345):
     """
@@ -54,47 +48,49 @@ def run_parallel(parameters, num_chains=8, master_seed=12345):
     return all_measurements
 
 
+def mc_run_parallel():
+    mp.set_start_method("spawn", force=True)  # robust on Windows/WSL
+
+    parameters = {'t1': 1, 't2': 0.3, 'm': 0, 'phi': np.pi/2,
+                  'p': 0, 'L': 20, 'n_mc': 40_000, 'n_measure': 10, 'num_chains': 5, 'data_file': "data/data_set_10"}
+
+    Path(parameters['data_file']).mkdir(parents=True, exist_ok=True)
+    with shelve.open(parameters['data_file'] + "/parameters") as db:
+        db['parameters'] = parameters
+
+    start = time.time()
+    measurements = run_parallel(parameters, num_chains=parameters['num_chains'], master_seed=2025)
+    end = time.time()
+    print("time:", end - start)
+
+    # (Optional) quick stats
+    arr = np.asarray(measurements)
+    print(f"#samples = {arr.size}, mean = {arr.mean():.6g}, stderr = {arr.std(ddof=1)/np.sqrt(arr.size):.6g}")
+
+
+def mc_run_single_thread():
+    np.set_printoptions(linewidth=np.inf)
+    np.random.seed(0)
+    parameters = {'t1': 1, 't2': 0.3, 'm': 0, 'phi': np.pi/2, 'p': 0, 'L': 2, 'n_mc': 10000, 'n_measure': 10, 'num_chains': 8, 'data_file': "data/data_set_9"}
+
+    my_model = SQHE(parameters)
+    start = time.time()
+    my_model.run()
+    end = time.time()
+    print(f'Run time: {end - start}')
+
+
+def ed_check_mc():
+    parameters = {'t1': 1, 't2': 0.3, 'm': 0, 'phi': np.pi / 2, 'p': 0, 'L': 2, 'n_mc': 10000, 'n_measure': 10, 'num_chains': 8, 'data_file': "data/data_set_9"}
+    my_model = ED_SQHE(parameters)
+    # my_model.get_many_body_hamiltonian()
+    # my_model.get_many_body_ground_state()
+    # my_model.compare_many_body_wave_function()
+    my_model.get_bilayer_state()
+
+
 # if __name__ == "__main__":
-#     mp.set_start_method("spawn", force=True)  # robust on Windows/WSL
-#
-#     p_list = [0.3]
-#     for i_p in range(len(p_list)):
-#         parameters = {'t1': 1, 't2': 0.5, 'm': 0, 'phi': np.pi/2,
-#                       'p': p_list[i_p], 'L': 2, 'n_mc': 10_000_000, 'n_measure': 10, 'num_chains': 5, 'data_file': "data/data_set_5"}
-#
-#         Path(parameters['data_file']).mkdir(parents=True, exist_ok=True)
-#         with shelve.open(parameters['data_file'] + "/parameters") as db:
-#             db['parameters'] = parameters
-#
-#         start = time.time()
-#         measurements = run_parallel(parameters, num_chains=parameters['num_chains'], master_seed=2025)
-#         end = time.time()
-#         print("time:", end - start)
-#
-#         # (Optional) quick stats
-#         arr = np.asarray(measurements)
-#         print(f"#samples = {arr.size}, mean = {arr.mean():.6g}, stderr = {arr.std(ddof=1)/np.sqrt(arr.size):.6g}")
-
-
-
-
-
-
-# np.set_printoptions(linewidth=np.inf)
-# np.random.seed(0)
-#
-parameters = {'t1': 1, 't2': 0.5, 'm': 0, 'phi': np.pi/2, 'p': 0.3, 'L': 2, 'n_mc': 10000, 'n_measure': 10, 'num_chains': 8, 'data_file': "data/data_set_7"}
-# my_model = SQHE(parameters)
-# start = time.time()
-# my_model.run()
-# end = time.time()
-# print(f'Run time: {end - start}')
-
-
-my_model = ED_SQHE(parameters)
-# my_model.get_many_body_hamiltonian()
-# my_model.get_many_body_ground_state()
-# my_model.compare_many_body_wave_function()
-my_model.get_bilayer_state()
-
+#     mc_run_parallel()
+#     # mc_run_single_thread()
+#     # ed_check_mc()
 
